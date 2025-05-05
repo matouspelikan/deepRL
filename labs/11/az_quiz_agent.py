@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+#python .\az_quiz_evaluator.py az_quiz_agent.py:--num_simulations=0 az_quiz_player_simple_heuristic.py
+
 import argparse
 import collections
 import os
@@ -15,22 +18,71 @@ parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
 parser.add_argument("--recodex", default=False, action="store_true", help="Running in ReCodEx")
 parser.add_argument("--render_each", default=0, type=int, help="Render some episodes.")
-parser.add_argument("--seed", default=None, type=int, help="Random seed.")
+parser.add_argument("--seed", default=0, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 # For these and any other arguments you add, ReCodEx will keep your default value.
-parser.add_argument("--alpha", default=0.3, type=float, help="MCTS root Dirichlet alpha")
-parser.add_argument("--batch_size", default=..., type=int, help="Number of game positions to train on.")
+parser.add_argument("--alpha", default=0.03, type=float, help="MCTS root Dirichlet alpha")
+parser.add_argument("--batch_size", default=128, type=int, help="Number of game positions to train on.")
 parser.add_argument("--epsilon", default=0.25, type=float, help="MCTS exploration epsilon in root")
 parser.add_argument("--evaluate_each", default=1, type=int, help="Evaluate each number of iterations.")
-parser.add_argument("--learning_rate", default=0.001, type=float, help="Learning rate.")
-parser.add_argument("--model_path", default="az_quiz.pt", type=str, help="Model path")
-parser.add_argument("--num_simulations", default=..., type=int, help="Number of simulations in one MCTS.")
-parser.add_argument("--sampling_moves", default=..., type=int, help="Sampling moves.")
+parser.add_argument("--learning_rate", default=0.0001, type=float, help="Learning rate.")
+parser.add_argument("--model_path", default="az_quiz2.pt", type=str, help="Model path")
+parser.add_argument("--num_simulations", default=30, type=int, help="Number of simulations in one MCTS.")
+parser.add_argument("--sampling_moves", default=8, type=int, help="Sampling moves.")
 parser.add_argument("--show_sim_games", default=False, action="store_true", help="Show simulated games.")
-parser.add_argument("--sim_games", default=1, type=int, help="Simulated games to generate in every iteration.")
-parser.add_argument("--train_for", default=1, type=int, help="Update steps in every iteration.")
+parser.add_argument("--sim_games", default=10, type=int, help="Simulated games to generate in every iteration.")
+parser.add_argument("--train_for", default=15, type=int, help="Update steps in every iteration.")
 parser.add_argument("--window_length", default=100_000, type=int, help="Replay buffer max length.")
 
+
+class Network(torch.nn.Module):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def __init__(self):
+        super().__init__()
+        self.shared = torch.nn.Sequential(
+            torch.nn.Conv2d(4, 16, 3, 1, "same"),
+            torch.nn.ReLU(),
+            # torch.nn.BatchNorm2d(16),
+            torch.nn.Conv2d(16, 16, 3, 1, "same"),
+            torch.nn.ReLU(),
+            # torch.nn.BatchNorm2d(16),
+            torch.nn.Conv2d(16, 16, 3, 1, "same"),
+            torch.nn.ReLU(),
+            # torch.nn.BatchNorm2d(16),
+            torch.nn.Conv2d(16, 16, 3, 1, "same"),
+            torch.nn.ReLU(),
+            # torch.nn.BatchNorm2d(16),
+            torch.nn.Conv2d(16, 16, 3, 1, "same"),
+            torch.nn.ReLU()
+        ).to(self.device)
+
+        self.policy_head = torch.nn.Sequential(
+            # torch.nn.BatchNorm2d(16),
+            torch.nn.Conv2d(16, 2, 3, 1, "same"),
+            torch.nn.ReLU(),
+            torch.nn.Flatten(),
+            torch.nn.Linear(98, 28), 
+            torch.nn.Softmax(dim=1)
+        ).to(self.device)
+
+        self.value_head = torch.nn.Sequential(
+            # torch.nn.BatchNorm2d(16),
+            torch.nn.Conv2d(16, 2, 3, 1, "same"),
+            torch.nn.ReLU(),
+            torch.nn.Flatten(),
+            torch.nn.Linear(98, 1),
+            torch.nn.Tanh()
+        ).to(self.device)
+
+        self.dropout = torch.nn.Dropout2d(0.2)
+
+    def forward(self, x):
+        hidden = self.shared(x)
+        hidden = self.dropout(hidden)
+        policy = self.policy_head(hidden)
+        value = self.value_head(hidden)
+        return policy, value
 
 #########
 # Agent #
@@ -45,12 +97,19 @@ class Agent:
         # A possible architecture known to work consists of
         # - 5 convolutional layers with 3x3 kernel and 15-20 filters,
         # - a policy head, which first uses 3x3 convolution to reduce the number of channels
-        #   to 2, flattens the representation, and finally uses a dense layer to produce
-        #   the policy logits,
+        #   to 2, flattens the representation, and finally uses a dense layer with softmax
+        #   activation to produce the policy,
         # - a value head, which again uses 3x3 convolution to reduce the number of channels
         #   to 2, flattens, and produces expected return using an output dense layer with
         #   `tanh` activation.
-        raise NotImplementedError()
+        self.policy_loss = torch.nn.CrossEntropyLoss()
+        self.value_loss = torch.nn.MSELoss()
+
+        self._model = Network()
+        params = self._model.parameters()
+        # print([p for p in self._model.named_parameters()])
+        self.optimizer = torch.optim.Adam(params, args.learning_rate)
+
 
     @classmethod
     def load(cls, path: str, args: argparse.Namespace) -> "Agent":
@@ -65,14 +124,43 @@ class Agent:
     @wrappers.typed_torch_function(device, torch.float32, torch.float32, torch.float32, via_np=True)
     def train(self, boards: torch.Tensor, target_policies: torch.Tensor, target_values: torch.Tensor) -> None:
         # TODO: Train the model based on given boards, target policies and target values.
-        # Note that the model returns logits.
-        raise NotImplementedError()
+        self._model.train()
+        boards = boards.permute(0, 3, 1, 2)
+        policy, value = self._model(boards)
+
+        # print(policy.shape, value.shape)
+        # print(target_policies.shape, target_values.shape)
+
+        value_loss = self.value_loss(value, target_values)
+        policy_loss = self.policy_loss(policy, target_policies)
+
+        # print(value_loss, policy_loss)
+        total_loss = value_loss + policy_loss
+        # print(total_loss)
+
+        self.optimizer.zero_grad()
+        total_loss.backward()
+        with torch.no_grad():
+            self.optimizer.step()
+
+
+    @wrappers.typed_torch_function(device, torch.float32, via_np=True)
+    def predict_train(self, boards: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
+        # TODO: Return the predicted policy and the value function.
+        boards = boards.permute(0, 3, 1, 2)
+        self._model.train()
+        with torch.no_grad():
+            policy, value = self._model(boards)
+        return policy, value
 
     @wrappers.typed_torch_function(device, torch.float32, via_np=True)
     def predict(self, boards: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
-        # TODO: Return the predicted policy and the value function. Because the model
-        # returns logits, you should apply softmax to return policy probabilities.
-        raise NotImplementedError()
+        # TODO: Return the predicted policy and the value function.
+        boards = boards.permute(0, 3, 1, 2)
+        self._model.eval()
+        with torch.no_grad():
+            policy, value = self._model(boards)
+        return policy, value
 
     def board(self, game: AZQuiz) -> np.ndarray:
         # TODO: Generate the boards from the current `AZQuiz` game.
@@ -82,24 +170,28 @@ class Agent:
         # - change the game so that the current player is always the same one
         #   (i.e., always 0 or always 1; `swap_players` of `AZQuiz.clone` might come handy);
         # - indicate the current player by adding channels to the representation.
-        raise NotImplementedError()
+        if game.to_play:
+            game = game.clone(True)
+        return game.board
+        
 
 
 ########
 # MCTS #
 ########
 class MCTNode:
-    def __init__(self, prior: float | None):
+    def __init__(self, prior: float | None, pov = None):
         self.prior = prior  # Prior probability from the agent.
         self.game = None    # If the node is evaluated, the corresponding game instance.
         self.children = {}  # If the node is evaluated, mapping of valid actions to the child `MCTNode`s.
         self.visit_count = 0
         self.total_value = 0
+        self.pov = pov
 
     def value(self) -> float:
         # TODO: Return the value of the current node, handling the
         # case when `self.visit_count` is 0.
-        raise NotImplementedError()
+        return self.total_value / self.visit_count if self.visit_count > 0 else 0
 
     def is_evaluated(self) -> bool:
         # A node is evaluated if it has non-zero `self.visit_count`.
@@ -117,15 +209,52 @@ class MCTNode:
         #   game. Then, for all valid actions, populate `self.children` with
         #   new `MCTNodes` with the priors from the policy predicted
         #   by the network.
-        value = ...
+
+        def winner_to_value(winner):
+            if winner == self.pov:
+                value = 1
+            elif winner == 1 - self.pov:
+                value = -1
+            else:
+                value = 0
+            return value
+
+        if game.winner is not None:
+            value = winner_to_value(game.winner)
+            policy = None
+        else:
+            policy_network, value_network = agent.predict(agent.board(game)[np.newaxis])
+            policy_network = policy_network[0]
+            value = value_network[0, 0]
+
+            # winner = self.simulation(game)
+            # value = winner_to_value(winner)
+
+            policy = np.zeros(game.ACTIONS)
+            for i in range(game.ACTIONS):
+                if game.valid(i):
+                    policy[i] = 1.
+            policy = policy / np.sum(policy)
+
+            for i in range(game.ACTIONS):
+                if game.valid(i):
+                    self.children[i] = MCTNode(policy_network[i], game.to_play)
 
         self.visit_count, self.total_value = 1, value
+
+    def simulation(self, game):
+        game = game.clone()
+        while game.winner is None:
+            game.move(np.random.choice(game.valid_actions()))
+        return game.winner
 
     def add_exploration_noise(self, epsilon: float, alpha: float) -> None:
         # TODO: Update the children priors by exploration noise
         # Dirichlet(alpha), so that the resulting priors are
         #   epsilon * Dirichlet(alpha) + (1 - epsilon) * original_prior
-        raise NotImplementedError()
+        dirichlets = np.random.dirichlet([0.3 for _ in range(self.game.ACTIONS)])
+        for i, child in enumerate(self.children.values()):
+            child.prior = epsilon*dirichlets[i] + (1 - epsilon)*child.prior
 
     def select_child(self) -> tuple[int, "MCTNode"]:
         # Select a child according to the PUCT formula.
@@ -145,16 +274,20 @@ class MCTNode:
             # - P(s, a) is the prior computed by the agent;
             # - N(s) is the number of visits of state `s`;
             # - N(s, a) is the number of visits of action `a` in state `s`.
-            raise NotImplementedError()
+            Cs = np.log((1 + self.visit_count + 19652.2) / 19652.2) + 1.25
+            return child.value() + Cs * child.prior * (np.sqrt(self.visit_count) / (child.visit_count + 1))
 
         # TODO: Return the (action, child) pair with the highest `ucb_score`.
-        raise NotImplementedError()
+        actions, scores = zip(*self.children.items())
+        scores = list(map(ucb_score, scores))
+        idx_max = np.argmax(scores)
+        return actions[idx_max], self.children[actions[idx_max]]
 
 
 def mcts(game: AZQuiz, agent: Agent, args: argparse.Namespace, explore: bool) -> np.ndarray:
     # Run the MCTS search and return the policy proportional to the visit counts,
     # optionally including exploration noise to the root children.
-    root = MCTNode(None)
+    root = MCTNode(None, game.to_play)
     root.evaluate(game, agent)
     if explore:
         root.add_exploration_noise(args.epsilon, args.alpha)
@@ -163,29 +296,54 @@ def mcts(game: AZQuiz, agent: Agent, args: argparse.Namespace, explore: bool) ->
     for _ in range(args.num_simulations):
         # TODO: Starting in the root node, traverse the tree using `select_child()`,
         # until a `node` without `children` is found.
-        node = ...
+        trace: list[MCTNode] = []
+        node = root
+        while len(node.children) > 0:
+            trace.append(node)
+            action, node = node.select_child()
+        # print(len(trace))
+        # trace.pop(-1)
+        parent = trace[-1]
 
         # If the node has not been evaluated, evaluate it.
         if not node.is_evaluated():
             # TODO: Evaluate the `node` using the `evaluate` method. To that
             # end, create a suitable `AZQuiz` instance for this node by cloning
             # the `game` from its parent and performing a suitable action.
-            game = ...
+            _game = parent.game.clone()
+            # _value = None
+            # if not _game.valid(action):
+            #     _value = 1.0 if _game.to_play == 0 else -1.0
+            # else:
+            _game.move(action)
+            node.evaluate(_game, agent)
         else:
             # TODO: If the node has been evaluated but has no children, the
             # game ends in this node. Update it appropriately.
-            ...
+            node.total_value += node.value()
+            node.visit_count += 1
 
         # Get the value of the node.
         value = node.value()
+        value_pov = node.pov
 
         # TODO: For all parents of the `node`, update their value estimate,
         # i.e., the `visit_count` and `total_value`.
+        for t in trace:
+            if t.pov == value_pov:
+                t.total_value += value
+            else:
+                t.total_value -= value
+            t.visit_count += 1
 
     # TODO: Compute a policy proportional to visit counts of the root children.
     # Note that invalid actions are not the children of the root, but the
     # policy should still return 0 for them.
-    policy = ...
+    policy = np.zeros(game.ACTIONS)
+    for a in range(game.ACTIONS):
+        if a in root.children:
+            policy[a] = root.children[a].visit_count
+    policy = policy / np.sum(policy)
     return policy
 
 
@@ -197,21 +355,39 @@ ReplayBufferEntry = collections.namedtuple("ReplayBufferEntry", ["board", "polic
 def sim_game(agent: Agent, args: argparse.Namespace) -> list[ReplayBufferEntry]:
     # Simulate a game, return a list of `ReplayBufferEntry`s.
     game = AZQuiz(randomized=False)
+    buffer = []
+    move_n = 0
     while game.winner is None:
         # TODO: Run the `mcts` with exploration.
-        policy = ...
+        policy = mcts(game, agent, args, True)
+        buffer.append((agent.board(game), game.to_play, policy))
 
         # TODO: Select an action, either by sampling from the policy or greedily,
         # according to the `args.sampling_moves`.
-        action = ...
+        if move_n < args.sampling_moves:
+            action = np.random.choice(np.arange(game.ACTIONS), p=policy)
+        else:
+            action = np.argmax(policy)
 
         game.move(action)
+        move_n += 1
+
+
+    replayBuffer: list[ReplayBufferEntry] = []
+    for board, pov, policy in buffer:
+        if game.winner == pov:
+            value = 1
+        elif game.winner == 1 - pov:
+            value = -1
+        else:
+            value = 0
+        replayBuffer.append(ReplayBufferEntry(board, policy, value))
 
     # TODO: Return all encountered game states, each consisting of
     # - the board (probably via `agent.board`),
     # - the policy obtained by MCTS,
     # - the outcome based on the outcome of the whole game.
-    raise NotImplementedError()
+    return replayBuffer
 
 
 def train(args: argparse.Namespace) -> Agent:
@@ -223,6 +399,8 @@ def train(args: argparse.Namespace) -> Agent:
     training = True
     while training:
         iteration += 1
+        if iteration > 20:
+            training = False
 
         # Generate simulated games
         for _ in range(args.sim_games):
@@ -254,7 +432,14 @@ def train(args: argparse.Namespace) -> Agent:
         for _ in range(args.train_for):
             # TODO: Perform training by sampling an `args.batch_size` of positions
             # from the `replay_buffer` and running `agent.train` on them.
-            raise NotImplementedError()
+            # print(len(replay_buffer))
+            sample = replay_buffer.sample(args.batch_size)
+            boards, policies, outcomes = zip(*sample)
+            boards = np.stack(boards)
+            policies = np.stack(policies)
+            outcomes = np.stack(outcomes)[:, np.newaxis]
+            # print(boards.shape, policies.shape, outcomes.shape)
+            agent.train(boards, policies, outcomes)
 
         # Evaluate
         if iteration % args.evaluate_each == 0:
@@ -284,11 +469,20 @@ class Player:
         if self.args.num_simulations == 0:
             # TODO: If no simulations should be performed, use directly
             # the policy predicted by the agent on the current game board.
-            policy = ...
+            # policy = torch.nn.functional.one_hot(torch.tensor(np.random.choice(game.ACTIONS)), game.ACTIONS).numpy()
+
+            policy, value = self.agent.predict(self.agent.board(game)[np.newaxis])
+            policy = policy[0]
+
+            # policy = np.ones(game.ACTIONS)
+            # for i in range(game.ACTIONS):
+            #     if not game.valid(i):
+            #         policy[i] = 0
+            # policy = policy / np.sum(policy)
         else:
             # TODO: Otherwise run the `mcts` without exploration and
             # utilize the policy returned by it.
-            policy = ...
+            policy = mcts(game, self.agent, self.args, False)
 
         # Now select a valid action with the largest probability.
         return max(game.valid_actions(), key=lambda action: policy[action])
@@ -311,6 +505,7 @@ def main(args: argparse.Namespace) -> Player:
     else:
         # Perform training
         agent = train(args)
+        agent.save(args.model_path)
 
     return Player(agent, args)
 

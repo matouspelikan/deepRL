@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <condition_variable>
 #include <exception>
@@ -58,6 +59,29 @@ void worker_thread(bool randomized, int num_simulations, int sampling_moves, flo
     // - the `Policy` is the policy computed by `mcts`;
     // - the float value is the outcome of the whole game.
     // When calling `mcts`, use `worker_evaluator` as the evaluator.
+
+    AZQuiz game(randomized);
+    Policy policy;
+
+    if (epsilon < 0)
+      game.move(std::uniform_int_distribution(0, game.ACTIONS - 1)(*generator));
+
+    while (game.winner < 0) {
+      mcts(game, worker_evaluator, num_simulations, epsilon, alpha, policy);
+
+      history->emplace_back(game, policy, 0);
+
+      int action;
+      if (history->size() < size_t(sampling_moves))
+        action = std::discrete_distribution(policy.begin(), policy.end())(*generator);
+      else
+        action = std::max_element(policy.begin(), policy.end()) - policy.begin();
+      game.move(action);
+    }
+
+    int winner = game.winner;
+    for (auto& [game, policy, value] : *history)
+      value = game.to_play == winner ? 1 : -1;
 
     // Once the whole game is finished, we pass it to processor to return it.
     {

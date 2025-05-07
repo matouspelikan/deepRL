@@ -3,7 +3,7 @@
 # - `cpu` to get CPU-only (smaller) build,
 # - `cu121` to get CUDA 12.1 build,
 # - `rocm5.7` to get AMD ROCm 5.7 build.
---extra-index-url=https://download.pytorch.org/whl/cu118
+--extra-index-url=https://download.pytorch.org/whl/cu121
 torch~=2.2.0
 torchaudio~=2.2.0
 torchvision~=0.17.0

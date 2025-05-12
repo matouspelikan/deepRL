@@ -53,11 +53,49 @@ void worker_evaluator(const Pisqorky& game, Policy& policy, float& value) {
 void worker_thread(int num_simulations, int sampling_moves, float epsilon, float alpha) try {
   while (true) {
     auto history = std::make_unique<History>();
-    // TODO: Simulate one game, collecting all (Pisqorky, Policy, float) triples
+    // Simulate one game, collecting all (Pisqorky, Policy, float) triples
     // to `history`, where
     // - the `Policy` is the policy computed by `mcts`;
     // - the float value is the outcome of the whole game.
     // When calling `mcts`, use `worker_evaluator` as the evaluator.
+
+    Pisqorky game;
+    Policy policy;
+
+    if (epsilon < 0) {
+      // Start with a random move if epsilon is negative
+      int random_action;
+      do {
+        random_action = std::uniform_int_distribution(0, game.ACTIONS - 1)(*generator);
+      } while (!game.valid(random_action));
+      game.move(random_action);
+    }
+
+    while (game.winner < 0) {
+      mcts(game, worker_evaluator, num_simulations, epsilon, alpha, policy);
+
+      history->emplace_back(game, policy, 0);
+
+      int action;
+      if (history->size() < size_t(sampling_moves)) {
+        // Use sampling for exploration in the first few moves
+        action = std::discrete_distribution(policy.begin(), policy.end())(*generator);
+      } else {
+        // Use the best move for the rest of the game
+        action = std::max_element(policy.begin(), policy.end()) - policy.begin();
+      }
+      game.move(action);
+    }
+
+    // Set the value for each state based on the game outcome
+    int winner = game.winner;
+    for (auto& [game, policy, value] : *history) {
+      if (winner == 2) { // Draw
+        value = 0;
+      } else {
+        value = game.to_play == winner ? 1 : -1;
+      }
+    }
 
     // Once the whole game is finished, we pass it to processor to return it.
     {

@@ -56,14 +56,14 @@ class Pisqorky {
   }
 
   void representation(float* output) const {
-    // TODO: This representation function does not currently indicate which player
-    // is currently on move, you need to modify it so it does. You can either make
-    // the current player have a fixed ID (0 or 1), or you can add another channel
-    // indicating the current player (increase `Pisqorky::C` in that case).
+    // Represent the board state with the current player's perspective
+    // Channel 0: Empty fields
+    // Channel 1: Current player's pieces
+    // Channel 2: Opponent's pieces
     for (auto field : board) {
         *output++ = field == 0;
-        *output++ = field == 1;
-        *output++ = field == 2;
+        *output++ = field == (1 + to_play);
+        *output++ = field == (1 + (1 - to_play));
     }
   }
 

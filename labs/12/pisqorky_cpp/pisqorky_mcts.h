@@ -24,13 +24,58 @@ struct Node {
   Node(const Pisqorky& game, const Policy& priors, float w) : game(game), n(1), w(w), priors(priors) { children.fill(-1); }
 };
 
+// Check if a position is adjacent to any occupied tile
+bool is_adjacent_to_occupied(const Pisqorky& game, int action) {
+  if (!game.valid(action))
+    return false;
+    
+  // Convert action to 2D coordinates
+  int x = action % Pisqorky::N;
+  int y = action / Pisqorky::N;
+  
+  // Check all 8 adjacent positions
+  for (int dx = -1; dx <= 1; dx++) {
+    for (int dy = -1; dy <= 1; dy++) {
+      // Skip the center position (the action itself)
+      if (dx == 0 && dy == 0)
+        continue;
+        
+      int nx = x + dx;
+      int ny = y + dy;
+      
+      // Check if the adjacent position is within bounds
+      if (nx >= 0 && nx < Pisqorky::N && ny >= 0 && ny < Pisqorky::N) {
+        int adjacent_action = ny * Pisqorky::N + nx;
+        // If the adjacent position is occupied, return true
+        if (game.board[adjacent_action] != 0)
+          return true;
+      }
+    }
+  }
+  
+  return false;
+}
+
 void zero_out_invalid_actions(const Pisqorky& game, Policy& policy) {
   float sum = 0.;
-  for (int action = 0; action < Pisqorky::ACTIONS; action++)
-    if (game.valid(action))
+  bool any_occupied = false;
+  
+  // Check if there are any occupied tiles on the board
+  for (int action = 0; action < Pisqorky::ACTIONS; action++) {
+    if (game.board[action] != 0) {
+      any_occupied = true;
+      break;
+    }
+  }
+  
+  for (int action = 0; action < Pisqorky::ACTIONS; action++) {
+    // If the board is empty (first move), consider all valid actions
+    // Otherwise, only consider actions adjacent to occupied tiles
+    if (game.valid(action) && (!any_occupied || is_adjacent_to_occupied(game, action)))
       sum += policy[action];
     else
       policy[action] = 0;
+  }
 
   if (sum) {
     sum = 1. / sum;
@@ -70,11 +115,22 @@ void mcts(const Pisqorky& game, const Evaluator& evaluator, int num_simulations,
     while (tree[node].game.winner < 0) {
       path.push_back(node);
 
+      // Check if there are any occupied tiles on the board
+      bool any_occupied = false;
+      for (int action = 0; action < Pisqorky::ACTIONS; action++) {
+        if (tree[node].game.board[action] != 0) {
+          any_occupied = true;
+          break;
+        }
+      }
+
       // Select a child
       child = -1;
       float best_score = 0;
-      for (int i = 0; i < Pisqorky::ACTIONS; i++)
-        if (tree[node].game.valid(i)) {
+      for (int i = 0; i < Pisqorky::ACTIONS; i++) {
+        // If the board is empty (first move), consider all valid actions
+        // Otherwise, only consider actions adjacent to occupied tiles
+        if (tree[node].game.valid(i) && (!any_occupied || is_adjacent_to_occupied(tree[node].game, i))) {
           float score = visit_all_root_children && (node == 0) ? INFINITY : 0;
           float child_visit = 1;
           if (tree[node].children[i] >= 0) {
@@ -89,6 +145,7 @@ void mcts(const Pisqorky& game, const Evaluator& evaluator, int num_simulations,
             best_score = score;
           }
         }
+      }
 
       // Enter the child if it exists
       if (tree[node].children[child] < 0)
